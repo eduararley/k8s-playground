@@ -306,3 +306,11 @@ resource "aws_eks_fargate_profile" "fg-cardoed5" {
   }
 }
 
+resource "helm_release" "nginx" {
+  name             = "mywebserver"
+  repository       = "https://charts.bitnami.com/bitnami"
+  chart            = "nginx"
+  namespace        = "fg-cardoed5"
+  create_namespace = true
+}
+
