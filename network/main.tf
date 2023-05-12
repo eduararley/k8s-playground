@@ -2,6 +2,8 @@
 
 data "aws_availability_zones" "available" {}
 
+data "aws_region" "current" {}
+
 variable "private_subnet_cidrs" {
  type        = list(string)
  description = "Private Subnet CIDR values"
@@ -27,7 +29,9 @@ variable "cluster_version" {
 ### NETWORK DEPLOY ###
 
 resource "aws_vpc" "main" {
- cidr_block = "10.188.102.0/23"
+ cidr_block           = "10.188.102.0/23"
+ enable_dns_support   = true
+ enable_dns_hostnames = true
  tags = {
   Name = "adhusea11b"
  }
@@ -271,6 +275,7 @@ resource "aws_eks_node_group" "worker-node-group" {
   aws_iam_role_policy_attachment.AmazonEKSWorkerNodePolicy,
   aws_iam_role_policy_attachment.AmazonEKS_CNI_Policy,
   #aws_iam_role_policy_attachment.AmazonEC2ContainerRegistryReadOnly,
+  aws_eks_cluster.eks_cluster,
  ]
 }
 
@@ -306,11 +311,74 @@ resource "aws_eks_fargate_profile" "fg-cardoed5" {
   }
 }
 
+data "aws_eks_cluster" "k8s-cluster" {
+  name = var.cluster_name
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = data.aws_eks_cluster.k8s-cluster.endpoint
+    cluster_ca_certificate = base64decode(data.aws_eks_cluster.k8s-cluster.certificate_authority[0].data)
+    exec {
+      api_version = "client.authentication.k8s.io/v1beta1"
+      command     = "aws"
+      args        = [ "eks", "get-token", "--cluster-name", data.aws_eks_cluster.k8s-cluster.id ]
+    }
+  }
+}
+
 resource "helm_release" "nginx" {
   name             = "mywebserver"
   repository       = "https://charts.bitnami.com/bitnami"
   chart            = "nginx"
   namespace        = "fg-cardoed5"
   create_namespace = true
+}
+
+data "aws_security_groups" "eks-cluster" {
+  filter {
+    name   = "vpc-id"
+    values = [aws_vpc.main.id]
+  }
+}
+
+data "aws_iam_policy_document" "s3_ecr_access" {
+  version = "2012-10-17"
+  statement {
+    sid     = "s3access"
+    effect  = "Allow"
+    actions = ["*"]
+
+    principals {
+      type        = "*"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id              = aws_vpc.main.id
+  vpc_endpoint_type   = "Gateway"
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.s3"
+  route_table_ids     = [aws_route_table.private.id]
+  policy              = data.aws_iam_policy_document.s3_ecr_access.json
+}
+
+resource "aws_vpc_endpoint" "ecr-dkr" {
+  vpc_id              = aws_vpc.main.id
+  vpc_endpoint_type   = "Interface"
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.ecr.dkr"
+  private_dns_enabled = true
+  security_group_ids  = data.aws_security_groups.eks-cluster.ids 
+  subnet_ids          = aws_subnet.private_subnets[*].id
+}
+
+resource "aws_vpc_endpoint" "ecr-api" {
+  vpc_id              = aws_vpc.main.id
+  vpc_endpoint_type   = "Interface"
+  service_name        = "com.amazonaws.${data.aws_region.current.name}.ecr.api"
+  private_dns_enabled = true
+  security_group_ids  = data.aws_security_groups.eks-cluster.ids 
+  subnet_ids          = aws_subnet.private_subnets[*].id
 }
 
